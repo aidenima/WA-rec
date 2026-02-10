@@ -1,7 +1,7 @@
 ﻿const express = require('express');
 require('dotenv').config();
 
-const { sendWhatsAppText } = require('./services/whatsapp');
+const { sendWhatsAppButtons } = require('./services/whatsapp');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -44,7 +44,14 @@ async function handleWebhookPayload(body) {
     }
 
     if (phoneNumberId && from) {
-      await sendWhatsAppText(phoneNumberId, from, 'Dobar dan');
+      await sendWhatsAppButtons(phoneNumberId, from, {
+        body: 'Dobar dan! Hvala sto ste se javili. Izaberite opciju ispod:',
+        buttons: [
+          { id: 'zakazi_termin', title: 'Zakazi termin' },
+          { id: 'imam_pitanje', title: 'Imam pitanje' },
+          { id: 'cena', title: 'Cena' }
+        ]
+      });
     }
   } catch (err) {
     console.error('Webhook handling error:', err && err.stack ? err.stack : err);
@@ -64,9 +71,9 @@ app.get('/webhook', (req, res) => {
 });
 
 app.post('/webhook', (req, res) => {
-  console.log("? POST /webhook HIT");
-  console.log("content-type:", req.headers["content-type"]);
-  console.log("raw body:", JSON.stringify(req.body));
+  console.log('✅ POST /webhook HIT');
+  console.log('content-type:', req.headers['content-type']);
+  console.log('raw body:', JSON.stringify(req.body));
 
   res.sendStatus(200);
 
