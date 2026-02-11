@@ -3,7 +3,7 @@ require('dotenv').config();
 const { DateTime } = require('luxon');
 
 const { sendWhatsAppButtons, sendWhatsAppText } = require('./services/whatsapp');
-const { findAvailableCalendar, createEvent } = require('./services/calendar');
+const { findAvailableCalendar, createEvent, listEvents, deleteEvent } = require('./services/calendar');
 const clientsConfig = require('./config/clients.json').clients || [];
 
 const app = express();
@@ -195,8 +195,12 @@ function formatSlot(dt) {
   return dt.toFormat('dd.MM.yyyy HH:mm');
 }
 
+function getConversationKey(phoneNumberId, from) {
+  return `${phoneNumberId}:${from}`;
+}
+
 async function handleBookingFlow(client, phoneNumberId, from, text, buttonId) {
-  const key = `${phoneNumberId}:${from}`;
+  const key = getConversationKey(phoneNumberId, from);
   const state = conversationState.get(key);
   const normalized = normalizeText(text);
 
@@ -207,7 +211,8 @@ async function handleBookingFlow(client, phoneNumberId, from, text, buttonId) {
   }
 
   if (buttonId === 'otkazi_termin' || normalized === 'otkazi termin') {
-    await sendWhatsAppText(phoneNumberId, from, 'Opcija otkazivanja jos nije dostupna.');
+    conversationState.set(key, { stage: 'cancel_awaiting_datetime' });
+    await sendWhatsAppText(phoneNumberId, from, 'Koji termin zelite da otkazete? (npr. "sreda u 12")');
     return;
   }
 
@@ -225,6 +230,70 @@ async function handleBookingFlow(client, phoneNumberId, from, text, buttonId) {
         { id: 'provera_termina', title: 'Provera termina' }
       ]
     });
+    return;
+  }
+
+  if (state.stage === 'cancel_awaiting_datetime') {
+    const requested = parseRequestedDateTime(text, client.timezone);
+    if (!requested) {
+      await sendWhatsAppText(phoneNumberId, from, 'Nisam razumeo datum. Napisite npr. "sreda u 12".');
+      return;
+    }
+
+    const timeMin = requested.minus({ hours: 2 }).toISO();
+    const timeMax = requested.plus({ hours: 2 }).toISO();
+
+    const matches = [];
+    for (const calId of client.calendars) {
+      const events = await listEvents(calId, timeMin, timeMax);
+      for (const ev of events) {
+        const desc = ev.description || '';
+        const evPhone = ev.extendedProperties?.private?.phone || '';
+        const matchesPhone = evPhone ? evPhone === from : desc.includes(`Telefon: ${from}`);
+        if (matchesPhone) {
+          matches.push({ calendarId: calId, event: ev });
+        }
+      }
+    }
+
+    if (matches.length === 0) {
+      await sendWhatsAppText(phoneNumberId, from, 'Ne mogu da pronadjem termin u tom vremenu. Napisite tacniji termin.');
+      return;
+    }
+
+    if (matches.length === 1) {
+      await deleteEvent(matches[0].calendarId, matches[0].event.id);
+      conversationState.delete(key);
+      await sendWhatsAppText(phoneNumberId, from, 'Vas termin je otkazan.');
+      return;
+    }
+
+    const list = matches
+      .slice(0, 3)
+      .map((m, i) => {
+        const start = m.event.start?.dateTime || m.event.start?.date;
+        const dt = start ? DateTime.fromISO(start).setZone(client.timezone) : null;
+        const label = dt ? formatSlot(dt) : 'nepoznat termin';
+        return `${i + 1}. ${label} - ${m.event.summary || ''}`.trim();
+      })
+      .join('\n');
+
+    conversationState.set(key, { stage: 'cancel_awaiting_choice', matches: matches.slice(0, 3) });
+    await sendWhatsAppText(phoneNumberId, from, `Pronadjeno vise termina. Izaberite broj:\n${list}`);
+    return;
+  }
+
+  if (state.stage === 'cancel_awaiting_choice') {
+    const choice = parseInt(normalized, 10);
+    if (!choice || choice < 1 || choice > state.matches.length) {
+      await sendWhatsAppText(phoneNumberId, from, 'Molim unesite broj opcije koju zelite da otkazete.');
+      return;
+    }
+
+    const selected = state.matches[choice - 1];
+    await deleteEvent(selected.calendarId, selected.event.id);
+    conversationState.delete(key);
+    await sendWhatsAppText(phoneNumberId, from, 'Vas termin je otkazan.');
     return;
   }
 
@@ -284,7 +353,7 @@ async function handleBookingFlow(client, phoneNumberId, from, text, buttonId) {
     const summary = `${selected} - ${state.name}`;
     const description = `Klijent: ${state.name}\nUsluga: ${selected}\nTelefon: ${from}`;
 
-    await createEvent(state.calendarId, startDt.toISO(), endDt.toISO(), summary, description, client.timezone);
+    await createEvent(state.calendarId, startDt.toISO(), endDt.toISO(), summary, description, client.timezone, from);
 
     conversationState.delete(key);
     await sendWhatsAppText(

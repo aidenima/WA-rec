@@ -28,7 +28,26 @@ async function findAvailableCalendar(calendarIds, startIso, endIso) {
   return null;
 }
 
-async function createEvent(calendarId, startIso, endIso, summary, description, timeZone) {
+
+async function listEvents(calendarId, timeMin, timeMax) {
+  const calendar = getCalendarClient();
+  const response = await calendar.events.list({
+    calendarId,
+    timeMin,
+    timeMax,
+    singleEvents: true,
+    orderBy: 'startTime'
+  });
+
+  return response.data.items || [];
+}
+
+async function deleteEvent(calendarId, eventId) {
+  const calendar = getCalendarClient();
+  await calendar.events.delete({ calendarId, eventId });
+}
+
+async function createEvent(calendarId, startIso, endIso, summary, description, timeZone, phone) {
   const calendar = getCalendarClient();
   const response = await calendar.events.insert({
     calendarId,
@@ -36,7 +55,12 @@ async function createEvent(calendarId, startIso, endIso, summary, description, t
       summary,
       description,
       start: { dateTime: startIso, timeZone },
-      end: { dateTime: endIso, timeZone }
+      end: { dateTime: endIso, timeZone },
+      extendedProperties: {
+        private: {
+          phone: phone || ''
+        }
+      }
     }
   });
 
@@ -45,5 +69,7 @@ async function createEvent(calendarId, startIso, endIso, summary, description, t
 
 module.exports = {
   findAvailableCalendar,
-  createEvent
+  createEvent,
+  listEvents,
+  deleteEvent
 };
